@@ -14,6 +14,11 @@
 
 ---
 
+> [!TIP]
+> **🤖 FOR AI AGENTS**: If you are an AI coding assistant, please start by reading the **[Agent Intelligence Layer](.agents/AGENT.md)** to understand the architectural patterns and extension hooks of this repository.
+
+---
+
 ## 🏗️ Overview
 
 This repository provides a production-ready, modular foundation for building **BAM Plugins**. By abstracting the complexity of the Jito Block Engine, MPSC aggregation, and transaction bundling, this template allows developers to focus entirely on their unique application logic.
