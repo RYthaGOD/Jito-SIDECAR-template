@@ -1,5 +1,5 @@
 <p align="center">
-  <h1>⚡ Jito BAM FCFS Sidecar Template</h1>
+  <h1>⚡ Jito FCFS Sidecar Template</h1>
   <p align="center">
     <strong>A high-fidelity framework for building strict First-Come-First-Served (FCFS) transaction relayers on Solana using Jito Bundles.</strong>
   </p>
@@ -9,7 +9,6 @@
   <img src="https://img.shields.io/badge/Rust-1.75+-orange?logo=rust&style=flat-square" />
   <img src="https://img.shields.io/badge/Solana-2.2.1-blue?logo=solana&style=flat-square" />
   <img src="https://img.shields.io/badge/Jito-MEV-brightgreen?style=flat-square" />
-  <img src="https://img.shields.io/badge/License-MIT-black?style=flat-square" />
 </p>
 
 ---
@@ -19,91 +18,127 @@
 
 ---
 
-## 🏗️ Overview
+## ❓ What is this?
 
-This repository provides a production-ready, modular foundation for bypassing Solana's default fee-based mempool. By abstracting the complexity of the Jito Block Engine, MPSC aggregation, and transaction chunking, this template allows developers to build **100% fair, First-Come-First-Served (FCFS)** application sequencers.
+Normally on Solana, if two people want to do the exact same thing at the exact same time (like buy a limited NFT), the person who pays the highest **Priority Fee** wins. This creates toxic MEV (Maximal Extractable Value) gas wars and ruins the experience for regular users.
 
-### Why use this template?
-- **Strict FCFS Ordering**: Payloads are timestamped the millisecond they hit the Axum server and sequentially locked into Jito bundles.
-- **MEV & Front-Running Immunity**: Because Jito guarantees sequential execution of bundle arrays, users cannot use priority fees to cut the line.
-- **Agnostic Plugin System**: Swap payloads and business logic by implementing a single trait (`BamPlugin`). Build for DePIN, NFT Mints, web3 games, or DEX routers without changing the core engine.
-- **ZK-Compression Ready**: Pre-integrated hooks for Light Protocol state resolution.
+This **Jito FCFS Sidecar** completely bypasses the mempool to fix this:
+1. Users send their requests directly to your off-chain Sidecar (this template) instead of the Solana RPC.
+2. The Sidecar stamps the exact millisecond the request arrived.
+3. It bundles all requests together in strict order and sends them directly to the **Jito Block Engine**.
+4. The Jito Block Engine guarantees the transactions are executed sequentially. **Priority fees no longer matter. The fastest clicker always wins.**
 
 ---
 
-## 🧬 Architecture
+## 🧠 The Agnostic Plugin Architecture
 
-The following diagram illustrates how we enforce strict ordering from ingestion to on-chain execution:
+This sidecar doesn't care if you are building a DePIN network, a Web3 Game, an NFT Mint, or a Private Liquidity Pool. It only handles the networking and Jito bundling. 
 
-```mermaid
-graph TD
-    A[User Payloads] -->|HTTP/JSON| B(Axum API: Strict Timestamping)
-    B -->|MPSC Queue| C{Aggregator & Sorter}
-    C -->|Ordered Chunks| D[BamPlugin: Build Instructions]
-    D -->|Sequential Txs| E[Jito Bundler]
-    E -->|Ordered Bundle Array + Tip| F[Jito Block Engine]
-    F -->|Execution In Exact Order| G[Solana Mainnet]
+To use it for your specific application, you just implement the `BamPlugin` trait.
+
+---
+
+## 🚀 How To Use It (Example: NFT Minting)
+
+Let's say you want to use this sidecar to protect your NFT Mint from front-running bots.
+
+### Step 1: Define your custom Payload
+Create a new file (e.g., `src/nft_mint_impl.rs`) and define the data you expect users to send to your sidecar.
+
+```rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct NftMintPayload {
+    pub buyer_wallet: String,
+    pub collection_id: String,
+    pub quantity: u8,
+}
 ```
 
----
+### Step 2: Implement the `BamPlugin` Trait
+Tell the sidecar how to verify the request and turn it into Solana instructions.
 
-## 🛠️ Components
+```rust
+use crate::plugin::BamPlugin;
+use async_trait::async_trait;
+use solana_sdk::{instruction::{AccountMeta, Instruction}, pubkey::Pubkey};
+use anyhow::Result;
 
-- **`src/plugin.rs`**: The core `BamPlugin` trait. Define your payload type and instruction builder here.
-- **`src/bundler.rs`**: High-performance integration with Jito's JSON-RPC SDK for bundling chunked transactions sequentially.
-- **`src/main.rs`**: The async engine orchestrating the server, FCFS timestamping, worker loops, and batching.
-- **`src/example_impl.rs` & `src/nft_mint_impl.rs`**: Reference implementations demonstrating how to plug in DePIN or NFT logic.
+pub struct NftMintPlugin;
 
----
+#[async_trait]
+impl BamPlugin for NftMintPlugin {
+    type Payload = NftMintPayload;
 
-## 🚀 Getting Started
+    fn id(&self) -> &'static str {
+        "nft-mint-plugin"
+    }
 
-### 1. Prerequisites
-- [Rust & Cargo](https://rustup.rs/) (v1.75+)
-- A Solana Keypair for the Sidecar Authority (Payer & Batch Signer).
+    // (Optional) Verify signatures, off-chain auth, or rate limits here
+    async fn verify(&self, payload: &Self::Payload) -> Result<()> {
+        if payload.quantity > 5 {
+            return Err(anyhow::anyhow!("Cannot mint more than 5"));
+        }
+        Ok(())
+    }
 
-### 2. Installation
-```bash
-git clone https://github.com/RYthaGOD/-jito-bam-template.git
-cd -jito-bam-template
-cp .env.example .env
+    // Translate the payload into Solana instructions
+    async fn build_instructions(
+        &self,
+        payload: &Self::Payload,
+        authority: &Pubkey,
+    ) -> Result<Vec<Instruction>> {
+        
+        // Example: Creating the instruction for your custom Smart Contract
+        let program_id = "YourProgramId1111111111111111111111111111111".parse().unwrap();
+        
+        let ix = Instruction {
+            program_id,
+            accounts: vec![
+                AccountMeta::new(*authority, true), // The sidecar paying the fees
+                AccountMeta::new(payload.buyer_wallet.parse()?, false), // The buyer receiving the NFT
+            ],
+            data: bincode::serialize(&payload.quantity)?, // Tell the contract how many to mint
+        };
+
+        Ok(vec![ix])
+    }
+}
 ```
 
-### 3. Implement Your Logic
-1. Open `src/nft_mint_impl.rs` (or create a new file).
-2. Implement the `BamPlugin` trait for your custom payload.
-3. Update `src/main.rs` to initialize your specific plugin instance:
-   ```rust
-   let plugin = Arc::new(ExampleNftMintPlugin);
-   ```
+### Step 3: Plug it into the Main Engine
+Open `src/main.rs` and swap out the default plugin with your new one:
 
-### 4. Run the Sidecar
+```rust
+// In src/main.rs
+use jito_bam_template::nft_mint_impl::NftMintPlugin;
+
+// Replace the old plugin initialization
+let plugin = Arc::new(NftMintPlugin);
+```
+
+### Step 4: Run your Private Sequencer!
 ```bash
 cargo run --release
 ```
 
----
-
-## 🧪 Testing
-
-The repository includes a simulation tool to verify your plugin's endpoint locally:
-
-```bash
-# Generate and send a mock payload
-cargo run --bin generate_payload | curl -X POST -H "Content-Type: application/json" -d @- http://localhost:3030/submit
-```
+Now, your users can POST their JSON payloads directly to `http://localhost:3030/submit`. The sidecar will automatically batch them, enforce strict FCFS ordering, and execute them perfectly on-chain via Jito.
 
 ---
 
-## 🛡️ Security & Privacy
+## 🛠️ Components Overview
 
-This template is designed for **Trusted Execution Environments (TEEs)** and private transaction flow.
-- **Signature Verification**: Ensure TEE or User signatures are verified in the `verify()` hook of your plugin.
-- **Mempool Privacy**: Payloads are routed directly to Jito Block Engines, bypassing the public gossip network and protecting users from MEV searchers.
+- **`src/main.rs`**: The core async engine. Handles HTTP requests, millisecond FCFS timestamping, and payload batching.
+- **`src/plugin.rs`**: The `BamPlugin` trait definition.
+- **`src/bundler.rs`**: High-performance integration with Jito's JSON-RPC SDK for packing sequential transaction bundles.
+- **`src/zk.rs`**: Pre-integrated wrapper for ZK-Compression (Light Protocol) state proofs.
+
+---
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please open an issue or submit a PR if you have suggestions for improving the FCFS aggregation logic or adding more modular components.
+Contributions are welcome! If you have suggestions for improving the FCFS aggregation logic, feel free to open a PR.
 
 ## ⚖️ License
 
