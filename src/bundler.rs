@@ -1,7 +1,6 @@
-use jito_sdk_rust::jito_json_rpc_sdk::JitoJsonRpcSDK;
+use jito_sdk_rust::JitoJsonRpcSDK;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
-    hash::Hash,
     instruction::Instruction,
     pubkey::Pubkey,
     signature::{Keypair, Signer},
@@ -31,29 +30,35 @@ impl JitoBundler {
 
     pub async fn send_bundle_with_tip(
         &self,
-        instructions: Vec<Instruction>,
+        instruction_chunks: Vec<Vec<Instruction>>,
         tip_lamports: u64,
     ) -> Result<String> {
         let blockhash = self.rpc_client.get_latest_blockhash()?;
         
         // 1. Fetch Jito Tip Account
-        let tip_accounts = self.jito_sdk.get_tip_accounts().await
-            .map_err(|e| anyhow!("Failed to fetch tip accounts: {}", e))?;
+        let tip_account_str = self.jito_sdk.get_random_tip_account().await
+            .map_err(|e| anyhow!("Failed to fetch tip account: {}", e))?;
         
-        let tip_pubkey: Pubkey = tip_accounts[0].parse()
+        let tip_pubkey: Pubkey = tip_account_str.parse()
             .map_err(|_| anyhow!("Invalid tip pubkey"))?;
 
         // 2. Prepare Transactions
         let mut txs = Vec::new();
 
-        // Main transaction with instructions
-        let main_tx = Transaction::new_signed_with_payer(
-            &instructions,
-            Some(&self.authority.pubkey()),
-            &[&self.authority],
-            blockhash,
-        );
-        txs.push(main_tx);
+        // Payload transactions (FCFS sequential chunks)
+        for chunk in instruction_chunks {
+            let chunk_tx = Transaction::new_signed_with_payer(
+                &chunk,
+                Some(&self.authority.pubkey()),
+                &[&self.authority],
+                blockhash,
+            );
+            txs.push(chunk_tx);
+        }
+
+        if txs.len() > 4 {
+            warn!("⚠️ Bundle contains {} payload transactions. Jito limits bundles to 5 total transactions (4 payloads + 1 tip). Submission may fail if it exceeds limits.", txs.len());
+        }
 
         // Tip transaction
         let tip_tx = Transaction::new_signed_with_payer(
@@ -74,8 +79,12 @@ impl JitoBundler {
             .map(|tx| bs58::encode(bincode::serialize(tx).unwrap()).into_string())
             .collect();
 
-        let bundle_id = self.jito_sdk.send_bundle(bundle).await
+        let params = serde_json::json!(bundle);
+
+        let response = self.jito_sdk.send_bundle(Some(params), None).await
             .map_err(|e| anyhow!("Bundle rejected: {}", e))?;
+            
+        let bundle_id = response["result"].as_str().unwrap_or("unknown_id").to_string();
 
         info!("🚀 Bundle {} submitted to Jito.", bundle_id);
         Ok(bundle_id)
@@ -85,18 +94,18 @@ impl JitoBundler {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(2));
         for _ in 0..15 {
             interval.tick().await;
-            if let Ok(statuses) = self.jito_sdk.get_bundle_statuses(vec![bundle_id.clone()]).await {
-                if let Some(s) = statuses.first() {
-                    match s.status.as_str() {
-                        "Landed" => {
-                            info!("🎉 Bundle {} CONFIRMED!", bundle_id);
-                            return;
+            if let Ok(response) = self.jito_sdk.get_bundle_statuses(vec![bundle_id.clone()]).await {
+                if let Some(statuses) = response["result"]["value"].as_array() {
+                    if let Some(s) = statuses.first() {
+                        if let Some(status) = s["confirmation_status"].as_str() {
+                            match status {
+                                "confirmed" | "finalized" | "processed" => {
+                                    info!("🎉 Bundle {} CONFIRMED!", bundle_id);
+                                    return;
+                                }
+                                _ => {}
+                            }
                         }
-                        "Failed" => {
-                            error!("❌ Bundle {} FAILED.", bundle_id);
-                            return;
-                        }
-                        _ => {}
                     }
                 }
             }

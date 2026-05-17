@@ -26,7 +26,7 @@ impl BamPlugin for ExampleHeartbeatPlugin {
         "heartbeat-plugin"
     }
 
-    async fn verify(&self, payload: &Self::Payload) -> Result<()> {
+    async fn verify(&self, _payload: &Self::Payload) -> Result<()> {
         // Implement TEE/Ed25519 verification here
         Ok(())
     }

@@ -11,7 +11,7 @@ fn main() {
     let payload = json!({
         "node_address": node_address,
         "timestamp": chrono::Utc::now().timestamp(),
-        "data_root": [42u8; 32],
+        "data_root": vec![42u8; 32],
     });
 
     println!("🚀 Example Payload for /submit:");
