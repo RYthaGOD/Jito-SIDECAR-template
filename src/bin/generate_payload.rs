@@ -1,19 +1,64 @@
-use ed25519_dalek::{Signer, SigningKey};
-use serde_json::json;
+use ed25519_dalek::Signer;
+use serde::Serialize;
+use bs58;
+
+#[derive(Serialize)]
+struct QuoteUpdateData<'a> {
+    market_id: &'a str,
+    bid_price: u64,
+    ask_price: u64,
+    size: u64,
+}
+
+#[derive(Serialize)]
+struct FullPayload<'a> {
+    market_id: &'a str,
+    bid_price: u64,
+    ask_price: u64,
+    size: u64,
+    signature: String,
+}
 
 fn main() {
-    // Standardized payload generator for local simulation and integration testing.
-    // Generates a mock Ed25519 node address and dummy data metrics.
-    let signing_key = SigningKey::from_bytes(&[1u8; 32]);
-    let verifying_key = signing_key.verifying_key();
-    let node_address = bs58::encode(verifying_key.to_bytes()).into_string();
+    // 1. Generate a dummy Keypair for the MM bot (Fixed bytes for testing)
+    let bytes = [1u8; 32];
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&bytes);
+    let pubkey = signing_key.verifying_key();
+    
+    let pubkey_base58 = bs58::encode(pubkey.as_bytes()).into_string();
+    println!("--- MAKER BOT KEY ---");
+    println!("Set this in your .env: MAKER_PUBKEY={}\n", pubkey_base58);
 
-    let payload = json!({
-        "node_address": node_address,
-        "timestamp": chrono::Utc::now().timestamp(),
-        "data_root": vec![42u8; 32],
-    });
+    // 2. The Data to sign
+    let market_id = "SOL/USDC";
+    let bid_price = 145_000_000;
+    let ask_price = 145_100_000;
+    let size = 100;
 
-    println!("🚀 Example Payload for /submit:");
-    println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+    let data = QuoteUpdateData {
+        market_id,
+        bid_price,
+        ask_price,
+        size,
+    };
+
+    // 3. Serialize and Sign
+    let serialized_data = bincode::serialize(&data).unwrap();
+    let signature = signing_key.sign(&serialized_data);
+    let signature_base58 = bs58::encode(signature.to_bytes()).into_string();
+
+    // 4. Create Full Payload
+    let payload = FullPayload {
+        market_id,
+        bid_price,
+        ask_price,
+        size,
+        signature: signature_base58,
+    };
+
+    println!("--- CURL TEST COMMAND ---");
+    let json = serde_json::to_string_pretty(&payload).unwrap();
+    println!("curl -X POST http://localhost:3030/submit \\");
+    println!("  -H 'Content-Type: application/json' \\");
+    println!("  -d '{}'", json);
 }

@@ -2,7 +2,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use solana_sdk::instruction::{AccountMeta, Instruction};
 use solana_sdk::pubkey::Pubkey;
-use anyhow::Result;
+use solana_sdk::signature::Signature;
+use anyhow::{anyhow, Result};
 use crate::plugin::BamPlugin;
 use std::str::FromStr;
 
@@ -12,6 +13,15 @@ pub struct QuoteUpdate {
     pub bid_price: u64,
     pub ask_price: u64,
     pub size: u64,
+    pub signature: String, // Base58 encoded signature
+}
+
+#[derive(Serialize)]
+struct QuoteUpdateData<'a> {
+    market_id: &'a str,
+    bid_price: u64,
+    ask_price: u64,
+    size: u64,
 }
 
 pub struct MakerQuotePlugin;
@@ -24,8 +34,35 @@ impl BamPlugin for MakerQuotePlugin {
         "maker_quote_updater"
     }
 
-    async fn verify(&self, _payload: &Self::Payload) -> Result<()> {
-        // In a real implementation, you would verify a signature or API key here
+    async fn verify(&self, payload: &Self::Payload) -> Result<()> {
+        // 1. Verify against allow-list
+        let allowed_markets_str = std::env::var("ALLOWED_MARKETS").unwrap_or_else(|_| "".to_string());
+        let allowed_markets: Vec<&str> = allowed_markets_str.split(',').collect();
+        
+        if !allowed_markets.contains(&payload.market_id.as_str()) {
+            return Err(anyhow!("Market {} is not in the ALLOWED_MARKETS list", payload.market_id));
+        }
+
+        // 2. Load Pubkey and Signature
+        let pubkey_base58 = std::env::var("MAKER_PUBKEY").map_err(|_| anyhow!("MAKER_PUBKEY environment variable not set"))?;
+        let pubkey = Pubkey::from_str(&pubkey_base58).map_err(|e| anyhow!("Invalid MAKER_PUBKEY: {}", e))?;
+
+        let signature = Signature::from_str(&payload.signature).map_err(|e| anyhow!("Invalid bs58 signature: {}", e))?;
+
+        // 3. Serialize Data Payload
+        let data = QuoteUpdateData {
+            market_id: &payload.market_id,
+            bid_price: payload.bid_price,
+            ask_price: payload.ask_price,
+            size: payload.size,
+        };
+        let serialized_data = bincode::serialize(&data).unwrap();
+
+        // 4. Verify Signature
+        if !signature.verify(pubkey.as_ref(), &serialized_data) {
+            return Err(anyhow!("Signature verification failed"));
+        }
+
         Ok(())
     }
 

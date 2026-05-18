@@ -115,7 +115,12 @@ async fn aggregator_loop<P: BamPlugin>(
     state: Arc<AppState<P>>,
     mut rx: mpsc::Receiver<OrderedPayload<P::Payload>>,
 ) {
-    let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(50));
+    let tick_rate_ms: u64 = std::env::var("BAM_TICK_RATE_MS")
+        .unwrap_or_else(|_| "50".to_string())
+        .parse()
+        .unwrap_or(50);
+    
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(tick_rate_ms));
     
     let mut dedup_map: std::collections::HashMap<String, OrderedPayload<P::Payload>> = std::collections::HashMap::new();
     let mut regular_batch: Vec<OrderedPayload<P::Payload>> = Vec::new();

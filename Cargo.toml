@@ -41,6 +41,7 @@ chrono = "0.4"
 # Optional: ZK-Compression (Enabled by default in template, but easy to strip)
 light-client = { version = "0.23.0", features = ["v2"] }
 light-sdk = "0.23.0"
+rand = "0.10.1"
 
 [dev-dependencies]
 tokio-test = "0.4"
