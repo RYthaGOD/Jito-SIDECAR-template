@@ -5,7 +5,7 @@ use axum::{
     Json, Router,
 };
 use jito_bam_template::{
-    example_impl::{ExampleHeartbeatPlugin, HeartbeatPayload},
+    maker_plugin::{MakerQuotePlugin, QuoteUpdate},
     plugin::BamPlugin,
     bundler::JitoBundler,
     zk::ZkModule,
@@ -48,8 +48,8 @@ async fn main() -> anyhow::Result<()> {
     let photon_url = std::env::var("PHOTON_URL").ok();
 
     // 2. Initialize Framework Components
-    // ExampleHeartbeatPlugin is a demonstration. Swap this with your specific BAM implementation.
-    let plugin = Arc::new(ExampleHeartbeatPlugin);
+    // Using MakerQuotePlugin to collect and deduplicate quote updates every 50ms.
+    let plugin = Arc::new(MakerQuotePlugin);
     let bundler = Arc::new(JitoBundler::new(&jito_url, &rpc_url, authority));
     
     // Conditional ZK-Module initialization based on environment configuration
@@ -77,7 +77,7 @@ async fn main() -> anyhow::Result<()> {
 
     // 4. Start HTTP API
     let app = Router::new()
-        .route("/submit", post(submit_handler::<ExampleHeartbeatPlugin>))
+        .route("/submit", post(submit_handler::<MakerQuotePlugin>))
         .with_state(state.clone());
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 3030));
@@ -115,20 +115,32 @@ async fn aggregator_loop<P: BamPlugin>(
     state: Arc<AppState<P>>,
     mut rx: mpsc::Receiver<OrderedPayload<P::Payload>>,
 ) {
-    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
-    let mut batch = Vec::new();
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(50));
+    
+    let mut dedup_map: std::collections::HashMap<String, OrderedPayload<P::Payload>> = std::collections::HashMap::new();
+    let mut regular_batch: Vec<OrderedPayload<P::Payload>> = Vec::new();
 
     loop {
         tokio::select! {
             Some(payload) = rx.recv() => {
-                batch.push(payload);
-                if batch.len() >= state.plugin.batch_size() {
-                    process_batch(&state, batch.drain(..).collect()).await;
+                if let Some(key) = state.plugin.grouping_key(&payload.payload) {
+                    // Overwrite any existing quote for this market_id
+                    dedup_map.insert(key, payload);
+                } else {
+                    regular_batch.push(payload);
+                }
+
+                if dedup_map.len() + regular_batch.len() >= state.plugin.batch_size() {
+                    let mut final_batch = std::mem::take(&mut regular_batch);
+                    final_batch.extend(dedup_map.drain().map(|(_, v)| v));
+                    process_batch(&state, final_batch).await;
                 }
             }
             _ = interval.tick() => {
-                if !batch.is_empty() {
-                    process_batch(&state, batch.drain(..).collect()).await;
+                if !dedup_map.is_empty() || !regular_batch.is_empty() {
+                    let mut final_batch = std::mem::take(&mut regular_batch);
+                    final_batch.extend(dedup_map.drain().map(|(_, v)| v));
+                    process_batch(&state, final_batch).await;
                 }
             }
         }

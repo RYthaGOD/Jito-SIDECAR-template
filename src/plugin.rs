@@ -17,6 +17,11 @@ pub trait BamPlugin: Send + Sync + 'static {
     /// Verify the incoming payload (e.g., TEE signature, rate limits).
     async fn verify(&self, payload: &Self::Payload) -> Result<()>;
 
+    /// Return a key to group payloads by (used for deduplication).
+    fn grouping_key(&self, _payload: &Self::Payload) -> Option<String> {
+        None
+    }
+
     /// Build the Solana instructions for a specific payload.
     /// This is where the "Business Logic" lives.
     async fn build_instructions(

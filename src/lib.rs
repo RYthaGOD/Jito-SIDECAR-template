@@ -3,6 +3,7 @@ pub mod bundler;
 pub mod zk;
 pub mod example_impl;
 pub mod nft_mint_impl;
+pub mod maker_plugin;
 
 pub use plugin::BamPlugin;
 pub use bundler::JitoBundler;
